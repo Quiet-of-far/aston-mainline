@@ -40,3 +40,6 @@ obj-$(CONFIG_SI7210)			+= si7210.o
 obj-$(CONFIG_TI_TMAG5273)		+= tmag5273.o
 
 obj-$(CONFIG_YAMAHA_YAS530)		+= yamaha-yas530.o
+
+obj-$(CONFIG_SENSORS_MMC56X3) += mmc56x3.o
+obj-$(CONFIG_AK09970) += ak09970.o

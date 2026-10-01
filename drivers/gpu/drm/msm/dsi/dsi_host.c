@@ -1904,7 +1904,46 @@ static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc
 	dsc->initial_scale_value = drm_dsc_initial_scale_value(dsc);
 	dsc->line_buf_depth = dsc->bits_per_component + 1;
 
-	return drm_dsc_compute_rc_parameters(dsc);
+	ret = drm_dsc_compute_rc_parameters(dsc);
+	if (ret)
+		return ret;
+
+	/* AA551 requires the panel vendor RC ranges and derived delays.
+	 * The generic pre-SCR values corrupt non-uniform picture content.
+	 */
+	if (of_machine_is_compatible("oneplus,aston") &&
+	    dsc->pic_width == 1264 && dsc->pic_height == 2780 &&
+	    dsc->slice_width == 632 && dsc->slice_height == 20 &&
+	    dsc->bits_per_component == 10 && dsc->bits_per_pixel == 128) {
+		static const u8 min_qp[15] = {0,4,5,5,7,7,7,7,7,7,9,9,9,13,16};
+		static const u8 max_qp[15] = {8,8,9,10,11,11,11,12,13,14,14,15,15,16,17};
+		int i;
+
+		dsc->block_pred_enable = true;
+		dsc->first_line_bpg_offset = 13;
+		for (i = 0; i < 15; i++) {
+			dsc->rc_range_params[i].range_min_qp = min_qp[i];
+			dsc->rc_range_params[i].range_max_qp = max_qp[i];
+		}
+		/* Derived fields from the same panel PPS (big endian). */
+		dsc->initial_xmit_delay = 512;
+		dsc->initial_dec_delay = 599;
+		dsc->initial_scale_value = 32;
+		dsc->scale_increment_interval = 504;
+		dsc->scale_decrement_interval = 8;
+		dsc->nfl_bpg_offset = 1402;
+		dsc->slice_bpg_offset = 1103;
+		dsc->initial_offset = 6144;
+		dsc->final_offset = 4320;
+		dev_info(&msm_host->pdev->dev, "AA551 panel RC parameters active\n");
+	}
+	{
+		struct drm_dsc_picture_parameter_set pps;
+		drm_dsc_pps_payload_pack(&pps, dsc);
+		dev_info(&msm_host->pdev->dev, "DSC PPS[0:64] %64phN\n", &pps);
+		dev_info(&msm_host->pdev->dev, "DSC PPS[64:128] %64phN\n", ((u8 *)&pps) + 64);
+	}
+	return 0;
 }
 
 static int dsi_host_parse_dt(struct msm_dsi_host *msm_host)

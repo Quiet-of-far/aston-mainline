@@ -915,6 +915,11 @@ static int fastrpc_map_attach(struct fastrpc_user *fl, int fd,
 	return 0;
 
 map_err:
+	if (map->table) {
+		dma_buf_unmap_attachment_unlocked(map->attach, map->table,
+						DMA_BIDIRECTIONAL);
+		map->table = NULL;
+	}
 	dma_buf_detach(map->buf, map->attach);
 attach_err:
 	dma_buf_put(map->buf);
@@ -2175,6 +2180,10 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
 	struct fastrpc_user *fl = (struct fastrpc_user *)file->private_data;
 	char __user *argp = (char __user *)arg;
 	int err;
+
+	/* An open fd still belongs to the old channel after a DSP restart. */
+	if (!READ_ONCE(fl->cctx->rpdev) || !READ_ONCE(fl->sctx->valid))
+		return -EPIPE;
 
 	switch (cmd) {
 	case FASTRPC_IOCTL_INVOKE:

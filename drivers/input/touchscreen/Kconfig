@@ -1416,4 +1416,10 @@ config TOUCHSCREEN_HIMAX_HX83112B
 	  To compile this driver as a module, choose M here: the
 	  module will be called himax_hx83112b.
 
+config TOUCHSCREEN_SYNA_TCM2
+	tristate "Synaptics TCM2 touchscreen"
+	depends on SPI
+	help
+	  Enable the Synaptics TouchCom SPI touchscreen used by OnePlus Ace 3.
+
 endif

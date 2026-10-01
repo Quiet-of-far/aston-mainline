@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2017-2018 The Linux Foundation. All rights reserved. */
 
+#include <linux/jiffies.h>
 #include <linux/completion.h>
 #include <linux/circ_buf.h>
 #include <linux/list.h>
@@ -110,11 +111,14 @@ static int a6xx_hfi_queue_write(struct a6xx_gmu *gmu,
 
 static int a6xx_hfi_wait_for_msg_interrupt(struct a6xx_gmu *gmu, u32 id, u32 seqnum)
 {
+	unsigned long deadline = jiffies + msecs_to_jiffies(2000);
 	int ret;
 	u32 val;
 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
 
 	do {
+		unsigned long now;
+
 		/* Wait for a response */
 		ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO, val,
 			val & A6XX_GMU_GMU2HOST_INTR_INFO_MSGQ, 100, 1000000);
@@ -129,7 +133,14 @@ static int a6xx_hfi_wait_for_msg_interrupt(struct a6xx_gmu *gmu, u32 id, u32 seq
 		 * pending faults from the GPU and we are taking a devcoredump.
 		 * Wait until the MMU is resumed and try again.
 		 */
-		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
+		/* Recovery may hold gpu->lock, which the fault dump needs.
+		 * Bound the wait so the caller can unwind and release its locks.
+		 */
+		now = jiffies;
+		if (time_after_eq(now, deadline) ||
+		    !wait_for_completion_timeout(&a6xx_gpu->base.fault_coredump_done,
+					 deadline - now))
+			break;
 	} while (true);
 
 	if (ret) {

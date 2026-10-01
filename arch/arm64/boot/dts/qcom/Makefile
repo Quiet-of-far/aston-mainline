@@ -387,6 +387,9 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-qrd.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-samsung-q5q.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-sony-xperia-yodo-pdx234.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-sheng.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-oneplus-aston.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-oneplus-aston_12G.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-oneplus-aston_16G_A14.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8650-ayaneo-pocket-s2.dtb
 
 sm8650-hdk-display-card-dtbs	:= sm8650-hdk.dtb sm8650-hdk-display-card.dtbo

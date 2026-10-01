@@ -169,6 +169,20 @@ SYM_CODE_END(record_mmu_state)
  */
 SYM_CODE_START_LOCAL(preserve_boot_args)
 	mov	x21, x0				// x21=FDT
+#ifdef CONFIG_ARM64_APPENDED_DTB
+	/* Prefer the appended DTB used by Android boot images. */
+	adrp	x4, _edata
+	ldr	w5, [x4]
+#ifndef __AARCH64EB__
+	ldr	w6, =0xedfe0dd0
+#else
+	ldr	w6, =0xd00dfeed
+#endif
+	cmp	w5, w6
+	b.ne	1f
+	mov	x21, x4
+1:
+#endif
 
 	adr_l	x0, boot_args			// record the contents of
 	stp	x21, x1, [x0]			// x0 .. x3 at kernel entry

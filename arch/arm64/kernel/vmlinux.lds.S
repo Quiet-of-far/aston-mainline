@@ -171,6 +171,13 @@ PECOFF_FILE_ALIGNMENT = 0x200;
 #define PECOFF_EDATA_PADDING
 #endif
 
+#ifdef CONFIG_ARM64_APPENDED_DTB
+#define FDT_EDATA_PADDING \
+	.fdt_edata_padding : { BYTE(0); . = ALIGN(SZ_2M); }
+#else
+#define FDT_EDATA_PADDING
+#endif
+
 SECTIONS
 {
 	/*
@@ -346,7 +353,12 @@ SECTIONS
 
 	PECOFF_EDATA_PADDING
 	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
+	FDT_EDATA_PADDING
 	_edata = .;
+
+#ifdef CONFIG_ARM64_APPENDED_DTB
+	. += SZ_2M;
+#endif
 
 	/* start of zero-init region */
 	BSS_SECTION(SBSS_ALIGN, 0, PAGE_SIZE)

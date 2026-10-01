@@ -868,6 +868,12 @@ config VIDEO_VD56G3
 	  To compile this driver as a module, choose M here: the
 	  module will be called vd56g3.
 
+config VIDEO_S5K3P9
+	tristate "Samsung S5K3P9 sensor support"
+	depends on OF && GPIOLIB
+	help
+	  V4L2 driver for the Samsung S5K3P9 camera sensor on OnePlus Ace 3.
+
 config VIDEO_VGXY61
 	tristate "ST VGXY61 sensor support"
 	select V4L2_CCI_I2C

@@ -8,6 +8,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
@@ -87,6 +88,12 @@ enum qcom_battmgr_variant {
 #define USB_ADAP_TYPE			7
 #define USB_MOISTURE_DET_EN		8
 #define USB_MOISTURE_DET_STS		9
+
+/* OnePlus SM8550 firmware USB properties, scoped to Aston below. */
+#define OPLUS_USB_OTG_AP_ENABLE		17
+#define OPLUS_USB_OTG_SWITCH		18
+#define OPLUS_USB_TYPEC_MODE		22
+#define OPLUS_USB_OTG_VBUS_ENABLE	24
 
 #define BATTMGR_WLS_PROPERTY_GET	0x34
 #define BATTMGR_WLS_PROPERTY_SET	0x35
@@ -298,6 +305,7 @@ struct qcom_battmgr_usb {
 	unsigned int current_max;
 	unsigned int current_limit;
 	unsigned int usb_type;
+	u32 oplus_state[OPLUS_USB_OTG_VBUS_ENABLE + 1];
 };
 
 struct qcom_battmgr_wireless {
@@ -333,6 +341,7 @@ struct qcom_battmgr {
 	struct qcom_battmgr_wireless wireless;
 
 	struct work_struct enable_work;
+	struct delayed_work otg_test_off_work;
 
 	/*
 	 * @lock is used to prevent concurrent power supply requests to the
@@ -1211,13 +1220,15 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 	case NOTIF_BAT_STATUS:
 	case NOTIF_BAT_PROPERTY:
 	case NOTIF_BAT_CHARGING_STATE:
-		power_supply_changed(battmgr->bat_psy);
+		if (battmgr->bat_psy)
+			power_supply_changed(battmgr->bat_psy);
 		break;
 	case NOTIF_USB_PROPERTY:
 		power_supply_changed(battmgr->usb_psy);
 		break;
 	case NOTIF_WLS_PROPERTY:
-		power_supply_changed(battmgr->wls_psy);
+		if (battmgr->wls_psy)
+			power_supply_changed(battmgr->wls_psy);
 		break;
 	default:
 		if (battmgr->variant != XIAOMI_BATTMGR_SM8550)
@@ -1509,6 +1520,15 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 		if (battmgr->error)
 			goto out_complete;
 
+		if (of_machine_is_compatible("oneplus,aston") &&
+		    (property == OPLUS_USB_OTG_AP_ENABLE ||
+		     property == OPLUS_USB_OTG_SWITCH ||
+		     property == OPLUS_USB_TYPEC_MODE ||
+		     property == OPLUS_USB_OTG_VBUS_ENABLE)) {
+			battmgr->usb.oplus_state[property] = le32_to_cpu(resp->intval.value);
+			break;
+		}
+
 		switch (property) {
 		case USB_ONLINE:
 			battmgr->usb.online = le32_to_cpu(resp->intval.value);
@@ -1571,6 +1591,13 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			break;
 		}
 		break;
+	case BATTMGR_USB_PROPERTY_SET:
+		if (payload_len != sizeof(resp->intval)) {
+			battmgr->error = -ENODATA;
+			break;
+		}
+		battmgr->error = le32_to_cpu(resp->intval.result) ? -EIO : 0;
+		break;
 	case BATTMGR_REQUEST_NOTIFICATION:
 	case BATTMGR_CHG_CTRL_LIMIT_EN:
 		battmgr->error = 0;
@@ -1627,6 +1654,148 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
 	}
 }
 
+/* Bounded Aston-only VBUS test. Firmware values follow OnePlus's driver. */
+static void qcom_battmgr_otg_test_off(struct work_struct *work)
+{
+	struct qcom_battmgr *battmgr = container_of(to_delayed_work(work),
+				struct qcom_battmgr, otg_test_off_work);
+	int ret;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					  OPLUS_USB_OTG_VBUS_ENABLE, 0);
+	mutex_unlock(&battmgr->lock);
+	if (ret)
+		dev_err(battmgr->dev, "OTG test power-off failed: %d\n", ret);
+}
+
+static void qcom_battmgr_otg_test_cleanup(void *data)
+{
+	struct qcom_battmgr *battmgr = data;
+
+	if (cancel_delayed_work_sync(&battmgr->otg_test_off_work))
+		qcom_battmgr_otg_test_off(&battmgr->otg_test_off_work.work);
+}
+
+static ssize_t otg_power_test_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(dev_get_drvdata(dev));
+	struct power_supply *battery;
+	union power_supply_propval value;
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+	if (!battmgr->service_up)
+		return -EAGAIN;
+
+	if (enable) {
+		battery = power_supply_get_by_name("bq28z610-0");
+		if (!battery)
+			return -ENODEV;
+		ret = power_supply_get_property(battery, POWER_SUPPLY_PROP_CAPACITY, &value);
+		if (!ret && value.intval < 15)
+			ret = -EPERM;
+		if (!ret) {
+			ret = power_supply_get_property(battery, POWER_SUPPLY_PROP_TEMP, &value);
+			if (!ret && (value.intval < 0 || value.intval > 400))
+				ret = -EPERM;
+		}
+		power_supply_put(battery);
+		if (ret)
+			return ret;
+	}
+
+	if (!enable)
+		cancel_delayed_work_sync(&battmgr->otg_test_off_work);
+	mutex_lock(&battmgr->lock);
+	if (enable) {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+						  USB_ONLINE, 0);
+		if (!ret && battmgr->usb.online)
+			ret = -EBUSY;
+		if (!ret)
+			ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+						  OPLUS_USB_TYPEC_MODE, 0);
+		if (!ret && battmgr->usb.oplus_state[OPLUS_USB_TYPEC_MODE] != 1)
+			ret = -ENOTCONN;
+	} else {
+		ret = 0;
+	}
+	if (!ret)
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+						  OPLUS_USB_OTG_VBUS_ENABLE, enable);
+	if (enable && !ret)
+		mod_delayed_work(system_wq, &battmgr->otg_test_off_work, 30 * HZ);
+	mutex_unlock(&battmgr->lock);
+	return ret ? (ret < 0 ? ret : -EIO) : count;
+}
+static DEVICE_ATTR_WO(otg_power_test);
+
+/* Read-only state accompanies the explicit, time-limited test above. */
+struct qcom_battmgr_oplus_attribute {
+	struct device_attribute attr;
+	u32 property;
+};
+
+static ssize_t oplus_usb_state_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct qcom_battmgr_oplus_attribute *oplus_attr =
+		container_of(attr, struct qcom_battmgr_oplus_attribute, attr);
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(dev_get_drvdata(dev));
+	u32 property = oplus_attr->property;
+	u32 value;
+	int ret;
+
+	if (!battmgr->service_up)
+		return -EAGAIN;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					  property, 0);
+	value = battmgr->usb.oplus_state[property];
+	mutex_unlock(&battmgr->lock);
+	if (ret)
+		return ret < 0 ? ret : -EIO;
+
+	return sysfs_emit(buf, "%u\n", value);
+}
+
+#define OPLUS_USB_STATE_ATTR(_name, _property) \
+	static struct qcom_battmgr_oplus_attribute oplus_attr_##_name = { \
+		.attr = __ATTR(_name, 0444, oplus_usb_state_show, NULL), \
+		.property = _property, \
+	}
+
+OPLUS_USB_STATE_ATTR(otg_ap_enable, OPLUS_USB_OTG_AP_ENABLE);
+OPLUS_USB_STATE_ATTR(otg_switch, OPLUS_USB_OTG_SWITCH);
+OPLUS_USB_STATE_ATTR(typec_mode, OPLUS_USB_TYPEC_MODE);
+OPLUS_USB_STATE_ATTR(otg_vbus_enable, OPLUS_USB_OTG_VBUS_ENABLE);
+
+static struct attribute *oplus_usb_state_attrs[] = {
+	&dev_attr_otg_power_test.attr,
+	&oplus_attr_otg_ap_enable.attr.attr,
+	&oplus_attr_otg_switch.attr.attr,
+	&oplus_attr_typec_mode.attr.attr,
+	&oplus_attr_otg_vbus_enable.attr.attr,
+	NULL,
+};
+
+static const struct attribute_group oplus_usb_state_group = {
+	.name = "oplus",
+	.attrs = oplus_usb_state_attrs,
+};
+
+static const struct attribute_group *oplus_usb_state_groups[] = {
+	&oplus_usb_state_group,
+	NULL,
+};
+
 static const struct of_device_id qcom_battmgr_of_variants[] = {
 	{ .compatible = "qcom,glymur-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
@@ -1667,6 +1836,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	psy_cfg_supply.num_supplicants = 1;
 
 	INIT_WORK(&battmgr->enable_work, qcom_battmgr_enable_worker);
+	INIT_DELAYED_WORK(&battmgr->otg_test_off_work, qcom_battmgr_otg_test_off);
 	mutex_init(&battmgr->lock);
 	init_completion(&battmgr->ack);
 
@@ -1681,7 +1851,18 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 		return dev_err_probe(dev, ret,
 				     "failed to init battery charge control thresholds\n");
 
-	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
+	/* Ace 3's ADSP publishes placeholder battery data (50%, 4 V).
+	 * The board has a real BQ28Z610 gauge and no wireless charger.
+	 * Keep only the usable USB input telemetry from PMIC GLINK.
+	 */
+	if (of_machine_is_compatible("oneplus,aston")) {
+		psy_cfg_supply.attr_grp = oplus_usb_state_groups;
+		battmgr->usb_psy = devm_power_supply_register(dev, &sm8350_usb_psy_desc,
+							   &psy_cfg_supply);
+		if (IS_ERR(battmgr->usb_psy))
+			return dev_err_probe(dev, PTR_ERR(battmgr->usb_psy),
+					     "failed to register USB power supply\n");
+	} else if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100) {
 		if (battmgr->variant == QCOM_BATTMGR_X1E80100)
 			psy_desc = &x1e80100_bat_psy_desc;
@@ -1736,6 +1917,12 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 						       battmgr);
 	if (IS_ERR(battmgr->client))
 		return PTR_ERR(battmgr->client);
+
+	if (of_machine_is_compatible("oneplus,aston")) {
+		ret = devm_add_action_or_reset(dev, qcom_battmgr_otg_test_cleanup, battmgr);
+		if (ret)
+			return ret;
+	}
 
 	pmic_glink_client_register(battmgr->client);
 

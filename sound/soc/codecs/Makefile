@@ -895,3 +895,6 @@ obj-$(CONFIG_SND_SOC_LPASS_TX_MACRO)	+= snd-soc-lpass-tx-macro.o
 
 # Mux
 obj-$(CONFIG_SND_SOC_SIMPLE_MUX)	+= snd-soc-simple-mux.o
+
+snd-soc-tfa9872-y := tfa9872.o
+obj-$(CONFIG_SND_SOC_TFA9872) += snd-soc-tfa9872.o

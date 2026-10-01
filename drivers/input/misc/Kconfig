@@ -993,4 +993,8 @@ config INPUT_STPMIC1_ONKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called stpmic1_onkey.
 
+config INPUT_TRI_KEY
+	tristate "OnePlus three-position alert slider"
+	depends on I2C
+
 endif

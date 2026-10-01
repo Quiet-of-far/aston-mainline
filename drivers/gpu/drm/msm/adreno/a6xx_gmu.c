@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2017-2019 The Linux Foundation. All rights reserved. */
 
+#include <linux/jiffies.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/firmware/qcom/qcom_scm.h>
@@ -394,6 +395,7 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 {
 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
 	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+	unsigned long deadline = jiffies + msecs_to_jiffies(2000);
 	int ret;
 	u32 val;
 	int request, ack;
@@ -425,6 +427,8 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 	gmu_write(gmu, REG_A6XX_GMU_HOST2GMU_INTR_SET, 1 << request);
 
 	do {
+		unsigned long now;
+
 		/* Wait for the acknowledge interrupt */
 		ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO, val,
 			val & (1 << ack), 100, 10000);
@@ -439,7 +443,14 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 		 * pending faults from the GPU and we are taking a devcoredump.
 		 * Wait until the MMU is resumed and try again.
 		 */
-		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
+		/* Recovery may hold gpu->lock, which the fault dump needs.
+		 * Bound the wait so the caller can unwind and release its locks.
+		 */
+		now = jiffies;
+		if (time_after_eq(now, deadline) ||
+		    !wait_for_completion_timeout(&a6xx_gpu->base.fault_coredump_done,
+					 deadline - now))
+			break;
 	} while (true);
 
 	if (ret)

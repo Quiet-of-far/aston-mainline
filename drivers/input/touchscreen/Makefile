@@ -120,3 +120,6 @@ obj-$(CONFIG_TOUCHSCREEN_IQS7211)	+= iqs7211.o
 obj-$(CONFIG_TOUCHSCREEN_ZINITIX)	+= zinitix.o
 obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX83112B)	+= himax_hx83112b.o
 obj-$(CONFIG_TOUCHSCREEN_NT36532E_SPI)	+=	nt36532e/
+
+syna_tcm2-y := syna_tcm2_core.o syna_tcm2_spi.o
+obj-$(CONFIG_TOUCHSCREEN_SYNA_TCM2) += syna_tcm2.o

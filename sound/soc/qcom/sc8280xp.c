@@ -17,6 +17,7 @@
 #include "sdw.h"
 
 struct sc8280xp_snd_data {
+	struct clk *i2s_clk;
 	bool stream_prepared[AFE_PORT_MAX];
 	struct snd_soc_card *card;
 	struct snd_soc_jack jack;
@@ -75,10 +76,14 @@ static int sc8280xp_snd_startup(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_dai *codec_dai;
-	int j;
+	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
+	int ret, j;
 
 	switch (cpu_dai->id) {
 	case SECONDARY_MI2S_RX:
+		ret = clk_prepare_enable(data->i2s_clk);
+		if (ret)
+			return ret;
 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
 		snd_soc_dai_set_fmt(cpu_dai, fmt);
 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
@@ -93,6 +98,16 @@ static int sc8280xp_snd_startup(struct snd_pcm_substream *substream)
 	}
 
 	return qcom_snd_sdw_startup(substream);
+}
+
+static void sc8280xp_snd_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
+
+	if (snd_soc_rtd_to_cpu(rtd, 0)->id == SECONDARY_MI2S_RX)
+		clk_disable_unprepare(data->i2s_clk);
+	qcom_snd_sdw_shutdown(substream);
 }
 
 static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
@@ -144,7 +159,7 @@ static int sc8280xp_snd_hw_free(struct snd_pcm_substream *substream)
 
 static const struct snd_soc_ops sc8280xp_be_ops = {
 	.startup = sc8280xp_snd_startup,
-	.shutdown = qcom_snd_sdw_shutdown,
+	.shutdown = sc8280xp_snd_shutdown,
 	.hw_free = sc8280xp_snd_hw_free,
 	.prepare = sc8280xp_snd_prepare,
 };
@@ -185,6 +200,10 @@ static int sc8280xp_platform_probe(struct platform_device *pdev)
 	ret = qcom_snd_parse_of(card);
 	if (ret)
 		return ret;
+
+	data->i2s_clk = devm_clk_get_optional(dev, NULL);
+	if (IS_ERR(data->i2s_clk))
+		return dev_err_probe(dev, PTR_ERR(data->i2s_clk), "unable to get i2s clock\n");
 
 	card->driver_name = of_device_get_match_data(dev);
 	sc8280xp_add_be_ops(card);

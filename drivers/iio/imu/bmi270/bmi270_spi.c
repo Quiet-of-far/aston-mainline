@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 
 #include <linux/iio/iio.h>
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 
 #include "bmi270.h"
@@ -50,16 +52,64 @@ static int bmi270_spi_probe(struct spi_device *spi)
 	struct regmap *regmap;
 	struct device *dev = &spi->dev;
 	const struct bmi270_chip_info *chip_info;
+	static const char * const supplies[] = { "vdd", "vddio" };
+	unsigned int dummy;
+	int ret, attempt;
 
 	chip_info = spi_get_device_match_data(spi);
 	if (!chip_info)
 		return -ENODEV;
+
+	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(supplies), supplies);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to enable sensor supplies\n");
+	usleep_range(2000, 3000);
 
 	regmap = devm_regmap_init(dev, &bmi270_regmap_bus, dev,
 				  &bmi270_spi_regmap_config);
 	if (IS_ERR(regmap))
 		return dev_err_probe(dev, PTR_ERR(regmap),
 				     "Failed to init spi regmap\n");
+
+	/* Bosch's initialization sequence selects SPI with a dummy read,
+	 * then resets the chip and selects SPI again before loading firmware.
+	 */
+	ret = regmap_read(regmap, 0x00, &dummy);
+	if (ret)
+		return ret;
+	usleep_range(450, 1000);
+	ret = regmap_write(regmap, 0x7e, 0xb6);
+	if (ret)
+		return ret;
+	usleep_range(2000, 3000);
+	ret = regmap_read(regmap, 0x00, &dummy);
+	if (ret)
+		return ret;
+	usleep_range(450, 1000);
+
+	/* A warm handover can leave the bit-banged bus unresponsive during
+	 * the first power-up. Check the identity before uploading firmware;
+	 * another SPI selection and reset recovers the device without needing
+	 * a userspace module reload.
+	 */
+	for (attempt = 0; attempt < 10; attempt++) {
+		ret = regmap_read(regmap, 0x00, &dummy);
+		if (ret)
+			return ret;
+		if (dummy == chip_info->chip_id)
+			break;
+		msleep(20);
+		ret = regmap_write(regmap, 0x7e, 0xb6);
+		if (ret)
+			return ret;
+		usleep_range(2000, 3000);
+		ret = regmap_read(regmap, 0x00, &dummy);
+		if (ret)
+			return ret;
+		usleep_range(450, 1000);
+	}
+	if (attempt == 10)
+		return dev_err_probe(dev, -ENODEV, "Sensor did not respond after reset\n");
 
 	return bmi270_core_probe(dev, regmap, chip_info);
 }
@@ -69,12 +119,14 @@ static const struct spi_device_id bmi270_spi_id[] = {
 	{ "bmi270", (kernel_ulong_t)&bmi270_chip_info },
 	{ }
 };
+MODULE_DEVICE_TABLE(spi, bmi270_spi_id);
 
 static const struct of_device_id bmi270_of_match[] = {
 	{ .compatible = "bosch,bmi260", .data = &bmi260_chip_info },
 	{ .compatible = "bosch,bmi270", .data = &bmi270_chip_info },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, bmi270_of_match);
 
 static struct spi_driver bmi270_spi_driver = {
 	.driver = {

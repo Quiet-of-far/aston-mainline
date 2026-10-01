@@ -309,4 +309,14 @@ config YAMAHA_YAS530
 	  To compile this driver as a module, choose M here: the module
 	  will be called yamaha-yas.
 
+config SENSORS_MMC56X3
+	tristate "MEMSIC MMC56X3 magnetometer"
+	depends on I2C
+	select REGMAP_I2C
+
+config AK09970
+	tristate "AK09970 hall sensor for OnePlus alert slider"
+	depends on I2C && INPUT
+	select INPUT_TRI_KEY
+
 endmenu

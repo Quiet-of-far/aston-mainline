@@ -2421,6 +2421,14 @@ endmenu # "Kernel Features"
 
 menu "Boot options"
 
+config ARM64_APPENDED_DTB
+	bool "Use device tree blob appended to Image"
+	depends on OF
+	help
+	  Look for a DTB appended to Image and use it when its magic is valid.
+	  Pad Image to a 2 MiB boundary and reserve 2 MiB before BSS so the
+	  appended DTB is preserved during early boot.
+
 config ARM64_ACPI_PARKING_PROTOCOL
 	bool "Enable support for the ARM64 ACPI parking protocol"
 	depends on ACPI
