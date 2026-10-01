@@ -1736,6 +1736,28 @@ static ssize_t otg_power_test_store(struct device *dev,
 }
 static DEVICE_ATTR_WO(otg_power_test);
 
+/* OEM initialization enables AP-side OTG detection independently of VBUS. */
+static ssize_t otg_detection_enable_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(dev_get_drvdata(dev));
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+	if (!battmgr->service_up)
+		return -EAGAIN;
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					  OPLUS_USB_OTG_AP_ENABLE, enable);
+	mutex_unlock(&battmgr->lock);
+	return ret ? (ret < 0 ? ret : -EIO) : count;
+}
+static DEVICE_ATTR_WO(otg_detection_enable);
+
 /* Read-only state accompanies the explicit, time-limited test above. */
 struct qcom_battmgr_oplus_attribute {
 	struct device_attribute attr;
@@ -1779,6 +1801,7 @@ OPLUS_USB_STATE_ATTR(otg_vbus_enable, OPLUS_USB_OTG_VBUS_ENABLE);
 
 static struct attribute *oplus_usb_state_attrs[] = {
 	&dev_attr_otg_power_test.attr,
+	&dev_attr_otg_detection_enable.attr,
 	&oplus_attr_otg_ap_enable.attr.attr,
 	&oplus_attr_otg_switch.attr.attr,
 	&oplus_attr_typec_mode.attr.attr,
